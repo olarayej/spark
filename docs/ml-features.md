@@ -1109,7 +1109,7 @@ import org.apache.spark.ml.feature.VectorIndexer;
 import org.apache.spark.ml.feature.VectorIndexerModel;
 import org.apache.spark.sql.DataFrame;
 
-DataFrame data = sqlContext.read.format("libsvm")
+DataFrame data = sqlContext.read().format("libsvm")
   .load("data/mllib/sample_libsvm_data.txt");
 VectorIndexer indexer = new VectorIndexer()
   .setInputCol("features")
@@ -1187,7 +1187,7 @@ for more details on the API.
 import org.apache.spark.ml.feature.Normalizer;
 import org.apache.spark.sql.DataFrame;
 
-DataFrame dataFrame = sqlContext.read.format("libsvm")
+DataFrame dataFrame = sqlContext.read().format("libsvm")
   .load("data/mllib/sample_libsvm_data.txt");
 
 // Normalize each Vector using $L^1$ norm.
@@ -1273,7 +1273,7 @@ import org.apache.spark.ml.feature.StandardScaler;
 import org.apache.spark.ml.feature.StandardScalerModel;
 import org.apache.spark.sql.DataFrame;
 
-DataFrame dataFrame = sqlContext.read.format("libsvm")
+DataFrame dataFrame = sqlContext.read().format("libsvm")
   .load("data/mllib/sample_libsvm_data.txt");
 StandardScaler scaler = new StandardScaler()
   .setInputCol("features")
@@ -1366,7 +1366,7 @@ import org.apache.spark.ml.feature.MinMaxScaler;
 import org.apache.spark.ml.feature.MinMaxScalerModel;
 import org.apache.spark.sql.DataFrame;
 
-DataFrame dataFrame = sqlContext.read.format("libsvm")
+DataFrame dataFrame = sqlContext.read().format("libsvm")
   .load("data/mllib/sample_libsvm_data.txt");
 MinMaxScaler scaler = new MinMaxScaler()
   .setInputCol("features")
@@ -1947,5 +1947,55 @@ formula = RFormula(
 output = formula.fit(dataset).transform(dataset)
 output.select("features", "label").show()
 {% endhighlight %}
+</div>
+</div>
+
+## ChiSqSelector
+
+`ChiSqSelector` stands for Chi-Squared feature selection. It operates on labeled data with
+categorical features. ChiSqSelector orders features based on a
+[Chi-Squared test of independence](https://en.wikipedia.org/wiki/Chi-squared_test)
+from the class, and then filters (selects) the top features which the class label depends on the
+most. This is akin to yielding the features with the most predictive power.
+
+**Examples**
+
+Assume that we have a DataFrame with the columns `id`, `features`, and `clicked`, which is used as
+our target to be predicted:
+
+~~~
+id | features              | clicked
+---|-----------------------|---------
+ 7 | [0.0, 0.0, 18.0, 1.0] | 1.0
+ 8 | [0.0, 1.0, 12.0, 0.0] | 0.0
+ 9 | [1.0, 0.0, 15.0, 0.1] | 0.0
+~~~
+
+If we use `ChiSqSelector` with a `numTopFeatures = 1`, then according to our label `clicked` the
+last column in our `features` chosen as the most useful feature:
+
+~~~
+id | features              | clicked | selectedFeatures
+---|-----------------------|---------|------------------
+ 7 | [0.0, 0.0, 18.0, 1.0] | 1.0     | [1.0]
+ 8 | [0.0, 1.0, 12.0, 0.0] | 0.0     | [0.0]
+ 9 | [1.0, 0.0, 15.0, 0.1] | 0.0     | [0.1]
+~~~
+
+<div class="codetabs">
+<div data-lang="scala" markdown="1">
+
+Refer to the [ChiSqSelector Scala docs](api/scala/index.html#org.apache.spark.ml.feature.ChiSqSelector)
+for more details on the API.
+
+{% include_example scala/org/apache/spark/examples/ml/ChiSqSelectorExample.scala %}
+</div>
+
+<div data-lang="java" markdown="1">
+
+Refer to the [ChiSqSelector Java docs](api/java/org/apache/spark/ml/feature/ChiSqSelector.html)
+for more details on the API.
+
+{% include_example java/org/apache/spark/examples/ml/JavaChiSqSelectorExample.java %}
 </div>
 </div>
