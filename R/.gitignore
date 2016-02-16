@@ -4,3 +4,7 @@
 lib
 pkg/man
 pkg/html
+pkg/.Rbuildignore
+pkg/SparkR.RData
+pkg/pkg.Rproj
+pkg/serialized.df
