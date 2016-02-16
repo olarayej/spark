@@ -47,7 +47,7 @@ setClass("DataFrame",
 setMethod("initialize", "DataFrame", function(.Object, sdf, isCached) {
   .Object@env <- new.env()
   .Object@env$isCached <- isCached
-
+  
   .Object@sdf <- sdf
   .Object
 })
@@ -303,8 +303,28 @@ setMethod("colnames",
 #' @rdname columns
 #' @name colnames<-
 setMethod("colnames<-",
-          signature(x = "DataFrame", value = "character"),
+          signature(x = "DataFrame"),
           function(x, value) {
+            
+            # Check parameter integrity
+            if (class(value) != "character") {
+              stop("Invalid column names.")
+            }
+            
+            if (length(value) != ncol(x)) {
+              stop(
+                "Column names must have the same length as the number of columns in the dataset.")
+            }
+            
+            if (any(is.na(value))) {
+              stop("Column names cannot be NA.")
+            }
+            
+            # Check if the column names have . in it
+            if (any(regexec(".", value, fixed=TRUE)[[1]][1] != -1)) {
+              stop("Colum names cannot contain the '.' symbol.")
+            }
+            
             sdf <- callJMethod(x@sdf, "toDF", as.list(value))
             dataFrame(sdf)
           })
@@ -329,12 +349,12 @@ setMethod("coltypes",
           function(x) {
             # Get the data types of the DataFrame by invoking dtypes() function
             types <- sapply(dtypes(x), function(x) {x[[2]]})
-
+            
             # Map Spark data types into R's data types using DATA_TYPES environment
             rTypes <- sapply(types, USE.NAMES=F, FUN=function(x) {
               # Check for primitive types
               type <- PRIMITIVE_TYPES[[x]]
-
+              
               if (is.null(type)) {
                 # Check for complex types
                 for (t in names(COMPLEX_TYPES)) {
@@ -343,20 +363,20 @@ setMethod("coltypes",
                     break
                   }
                 }
-
+                
                 if (is.null(type)) {
                   stop(paste("Unsupported data type: ", x))
                 }
               }
               type
             })
-
+            
             # Find which types don't have mapping to R
             naIndices <- which(is.na(rTypes))
-
+            
             # Assign the original scala data types to the unmatched ones
             rTypes[naIndices] <- types[naIndices]
-
+            
             rTypes
           })
 
@@ -430,7 +450,7 @@ setMethod("coltypes<-",
 setMethod("registerTempTable",
           signature(x = "DataFrame", tableName = "character"),
           function(x, tableName) {
-              invisible(callJMethod(x@sdf, "registerTempTable", tableName))
+            invisible(callJMethod(x@sdf, "registerTempTable", tableName))
           })
 
 #' insertInto
@@ -877,7 +897,7 @@ setMethod("collect",
               # listCols is a list of columns
               listCols <- callJStatic("org.apache.spark.sql.api.r.SQLUtils", "dfToCols", x@sdf)
               stopifnot(length(listCols) == ncol)
-
+              
               # An empty data.frame with 0 columns and number of rows as collected
               nrow <- length(listCols[[1]])
               if (nrow <= 0) {
@@ -885,7 +905,7 @@ setMethod("collect",
               } else {
                 df <- data.frame(row.names = 1 : nrow)
               }
-
+              
               # Append columns one by one
               for (colIndex in 1 : ncol) {
                 # Note: appending a column of list type into a data.frame so that
@@ -989,7 +1009,7 @@ setMethod("take",
 setMethod("head",
           signature(x = "DataFrame"),
           function(x, num = 6L) {
-          # Default num is 6L in keeping with R's data.frame convention
+            # Default num is 6L in keeping with R's data.frame convention
             take(x, num)
           })
 
@@ -1062,17 +1082,17 @@ setMethod("toRDD",
 #'   agg(groupBy(df, "department", "gender"), salary="avg", "age" -> "max")
 #' }
 setMethod("groupBy",
-           signature(x = "DataFrame"),
-           function(x, ...) {
-             cols <- list(...)
-             if (length(cols) >= 1 && class(cols[[1]]) == "character") {
-               sgd <- callJMethod(x@sdf, "groupBy", cols[[1]], cols[-1])
-             } else {
-               jcol <- lapply(cols, function(c) { c@jc })
-               sgd <- callJMethod(x@sdf, "groupBy", jcol)
-             }
-             groupedData(sgd)
-           })
+          signature(x = "DataFrame"),
+          function(x, ...) {
+            cols <- list(...)
+            if (length(cols) >= 1 && class(cols[[1]]) == "character") {
+              sgd <- callJMethod(x@sdf, "groupBy", cols[[1]], cols[-1])
+            } else {
+              jcol <- lapply(cols, function(c) { c@jc })
+              sgd <- callJMethod(x@sdf, "groupBy", jcol)
+            }
+            groupedData(sgd)
+          })
 
 #' @rdname groupBy
 #' @name group_by
@@ -1192,7 +1212,7 @@ setMethod("$", signature(x = "DataFrame"),
 setMethod("$<-", signature(x = "DataFrame"),
           function(x, name, value) {
             stopifnot(class(value) == "Column" || is.null(value))
-
+            
             if (is.null(value)) {
               nx <- drop(x, name)
             } else {
@@ -1306,7 +1326,7 @@ setMethod("select", signature(x = "DataFrame", col = "character"),
               if (length(list(...)) > 0) {
                 stop("To select multiple columns, use a character vector or list for col")
               }
-
+              
               select(x, as.list(col))
             } else {
               sdf <- callJMethod(x@sdf, "select", col, list(...))
@@ -1547,10 +1567,10 @@ setClassUnion("characterOrColumn", c("character", "Column"))
 setMethod("arrange",
           signature(x = "DataFrame", col = "Column"),
           function(x, col, ...) {
-              jcols <- lapply(list(col, ...), function(c) {
-                c@jc
-              })
-
+            jcols <- lapply(list(col, ...), function(c) {
+              c@jc
+            })
+            
             sdf <- callJMethod(x@sdf, "sort", jcols)
             dataFrame(sdf)
           })
@@ -1561,10 +1581,10 @@ setMethod("arrange",
 setMethod("arrange",
           signature(x = "DataFrame", col = "character"),
           function(x, col, ..., decreasing = FALSE) {
-
+            
             # all sorting columns
             by <- list(col, ...)
-
+            
             if (length(decreasing) == 1) {
               # in case only 1 boolean argument - decreasing value is specified,
               # it will be used for all columns
@@ -1572,7 +1592,7 @@ setMethod("arrange",
             } else if (length(decreasing) != length(by)) {
               stop("Arguments 'col' and 'decreasing' must have the same length")
             }
-
+            
             # builds a list of columns of type Column
             # example: [[1]] Column Species ASC
             #          [[2]] Column Petal_Length DESC
@@ -1583,7 +1603,7 @@ setMethod("arrange",
                 asc(getColumn(x, by[[i]]))
               }
             })
-
+            
             do.call("arrange", c(x, jcols))
           })
 
@@ -1662,7 +1682,7 @@ setMethod("dropDuplicates",
           signature(x = "DataFrame"),
           function(x, colNames = columns(x)) {
             stopifnot(class(colNames) == "character")
-
+            
             sdf <- callJMethod(x@sdf, "dropDuplicates", as.list(colNames))
             dataFrame(sdf)
           })
@@ -1705,19 +1725,19 @@ setMethod("join",
                 sdf <- callJMethod(x@sdf, "join", y@sdf, joinExpr@jc)
               } else {
                 if (joinType %in% c("inner", "outer", "full", "fullouter",
-                    "leftouter", "left_outer", "left",
-                    "rightouter", "right_outer", "right", "leftsemi")) {
+                                    "leftouter", "left_outer", "left",
+                                    "rightouter", "right_outer", "right", "leftsemi")) {
                   joinType <- gsub("_", "", joinType)
                   sdf <- callJMethod(x@sdf, "join", y@sdf, joinExpr@jc, joinType)
                 } else {
                   stop("joinType must be one of the following types: ",
-                      "'inner', 'outer', 'full', 'fullouter', 'leftouter', 'left_outer', 'left',
-                      'rightouter', 'right_outer', 'right', 'leftsemi'")
+                       "'inner', 'outer', 'full', 'fullouter', 'leftouter', 'left_outer', 'left',
+                       'rightouter', 'right_outer', 'right', 'leftsemi'")
+                }
                 }
               }
-            }
             dataFrame(sdf)
-          })
+            })
 
 #' @name merge
 #' @title Merges two data frames
@@ -1760,11 +1780,11 @@ setMethod("merge",
           function(x, y, by = intersect(names(x), names(y)), by.x = by, by.y = by,
                    all = FALSE, all.x = all, all.y = all,
                    sort = TRUE, suffixes = c("_x","_y"), ... ) {
-
+            
             if (length(suffixes) != 2) {
               stop("suffixes must have length 2")
             }
-
+            
             # join type is identified based on the values of all, all.x and all.y
             # default join type is inner, according to R it should be natural but since it
             # is not supported in spark inner join is used
@@ -1776,7 +1796,7 @@ setMethod("merge",
             } else if (all.y) {
               joinType <- "right_outer"
             }
-
+            
             # join expression is based on by.x, by.y if both by.x and by.y are not missing
             # or on by, if by.x or by.y are missing or have different lengths
             if (length(by.x) > 0 && length(by.x) == length(by.y)) {
@@ -1792,45 +1812,45 @@ setMethod("merge",
               joinRes <- join(x, y)
               return (joinRes)
             }
-
+            
             # sets alias for making colnames unique in dataframes 'x' and 'y'
             colsX <- generateAliasesForIntersectedCols(x, by, suffixes[1])
             colsY <- generateAliasesForIntersectedCols(y, by, suffixes[2])
-
+            
             # selects columns with their aliases from dataframes
             # in case same column names are present in both data frames
             xsel <- select(x, colsX)
             ysel <- select(y, colsY)
-
+            
             # generates join conditions and adds them into a list
             # it also considers alias names of the columns while generating join conditions
             joinColumns <- lapply(seq_len(length(joinX)), function(i) {
               colX <- joinX[[i]]
               colY <- joinY[[i]]
-
+              
               if (colX %in% by) {
                 colX <- paste(colX, suffixes[1], sep = "")
               }
               if (colY %in% by) {
                 colY <- paste(colY, suffixes[2], sep = "")
               }
-
+              
               colX <- getColumn(xsel, colX)
               colY <- getColumn(ysel, colY)
-
+              
               colX == colY
             })
-
+            
             # concatenates join columns with '&' and executes join
             joinExpr <- Reduce("&", joinColumns)
             joinRes <- join(xsel, ysel, joinExpr, joinType)
-
+            
             # sorts the result by 'by' columns if sort = TRUE
             if (sort && length(by) > 0) {
               colNameWithSuffix <- paste(by, suffixes[2], sep = "")
               joinRes <- do.call("arrange", c(joinRes, colNameWithSuffix, decreasing = FALSE))
             }
-
+            
             joinRes
           })
 
@@ -1852,7 +1872,7 @@ generateAliasesForIntersectedCols <- function (x, intersectedColNames, suffix) {
       newJoin <- paste(colName, suffix, sep = "")
       if (newJoin %in% allColNames){
         stop ("The following column name: ", newJoin, " occurs more than once in the 'DataFrame'.",
-          "Please use different suffixes for the intersected columns.")
+              "Please use different suffixes for the intersected columns.")
       }
       col <- alias(col, newJoin)
     }
@@ -2010,7 +2030,7 @@ setMethod("write.df",
             jmode <- convertToJSaveMode(mode)
             options <- varargsToEnv(...)
             if (!is.null(path)) {
-                options[["path"]] <- path
+              options[["path"]] <- path
             }
             write <- callJMethod(df@sdf, "write")
             write <- callJMethod(write, "format", source)
@@ -2071,12 +2091,12 @@ setMethod("saveAsTable",
               } else {
                 stop("sparkRHive or sparkRSQL context has to be specified")
               }
-               source <- callJMethod(sqlContext, "getConf", "spark.sql.sources.default",
-                                     "org.apache.spark.sql.parquet")
+              source <- callJMethod(sqlContext, "getConf", "spark.sql.sources.default",
+                                    "org.apache.spark.sql.parquet")
             }
             jmode <- convertToJSaveMode(mode)
             options <- varargsToEnv(...)
-
+            
             write <- callJMethod(df@sdf, "write")
             write <- callJMethod(write, "format", source)
             write <- callJMethod(write, "mode", jmode)
@@ -2171,7 +2191,7 @@ setMethod("dropna",
             if (is.null(minNonNulls)) {
               minNonNulls <- if (how == "any") { length(cols) } else { 1 }
             }
-
+            
             naFunctions <- callJMethod(x@sdf, "na")
             sdf <- callJMethod(naFunctions, "drop",
                                as.integer(minNonNulls), as.list(cols))
@@ -2222,7 +2242,7 @@ setMethod("fillna",
             if (!(class(value) %in% c("integer", "numeric", "character", "list"))) {
               stop("value should be an integer, numeric, charactor or named list.")
             }
-
+            
             if (class(value) == "list") {
               # Check column names in the named list
               colNames <- names(value)
@@ -2235,22 +2255,22 @@ setMethod("fillna",
                   stop("Each item in value should be an integer, numeric or charactor.")
                 }
               })
-
+              
               # Convert to the named list to an environment to be passed to JVM
               valueMap <- convertNamedListToEnv(value)
-
+              
               # When value is a named list, caller is expected not to pass in cols
               if (!is.null(cols)) {
                 warning("When value is a named list, cols is ignored!")
                 cols <- NULL
               }
-
+              
               value <- valueMap
             } else if (is.integer(value)) {
               # Cast an integer to a numeric
               value <- as.numeric(value)
             }
-
+            
             naFunctions <- callJMethod(x@sdf, "na")
             sdf <- if (length(cols) == 0) {
               callJMethod(naFunctions, "fill", value)
@@ -2350,56 +2370,56 @@ setMethod("with",
 setMethod("str",
           signature(object = "DataFrame"),
           function(object) {
-
+            
             # TODO: These could be made global parameters, though in R it's not the case
             MAX_CHAR_PER_ROW <- 120
             MAX_COLS <- 100
-
+            
             # Get the column names and types of the DataFrame
             names <- names(object)
             types <- coltypes(object)
-
+            
             # Get the first elements of the dataset. Limit number of columns accordingly
             localDF <- if (ncol(object) > MAX_COLS) {
               head(object[, c(1:MAX_COLS)])
             } else {
               head(object)
             }
-
+            
             # The number of observations will not be displayed as computing the
             # number of rows is a very expensive operation
             cat(paste0("'", class(object), "': ", length(names), " variables:\n"))
-
+            
             if (nrow(localDF) > 0) {
               for (i in 1 : ncol(localDF)) {
                 # Get the first elements for each column
-
+                
                 firstElements <- if (types[i] == "character") {
                   paste(paste0("\"", localDF[,i], "\""), collapse = " ")
                 } else {
                   paste(localDF[,i], collapse = " ")
                 }
-
+                
                 # Add the corresponding number of spaces for alignment
                 spaces <- paste(rep(" ", max(nchar(names) - nchar(names[i]))), collapse="")
-
+                
                 # Get the short type. For 'character', it would be 'chr';
                 # 'for numeric', it's 'num', etc.
                 dataType <- SHORT_TYPES[[types[i]]]
                 if (is.null(dataType)) {
                   dataType <- substring(types[i], 1, 3)
                 }
-
+                
                 # Concatenate the colnames, coltypes, and first
                 # elements of each column
                 line <- paste0(" $ ", names[i], spaces, ": ",
                                dataType, " ",firstElements)
-
+                
                 # Chop off extra characters if this is too long
                 cat(substr(line, 1, MAX_CHAR_PER_ROW))
                 cat("\n")
               }
-
+              
               if (ncol(localDF) < ncol(object)) {
                 cat(paste0("\nDisplaying first ", ncol(localDF), " columns only."))
               }
@@ -2433,7 +2453,7 @@ setMethod("drop",
           signature(x = "DataFrame"),
           function(x, col) {
             stopifnot(class(col) == "character" || class(col) == "Column")
-
+            
             if (class(col) == "Column") {
               sdf <- callJMethod(x@sdf, "drop", col@jc)
             } else {
