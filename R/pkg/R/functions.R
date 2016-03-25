@@ -2662,3 +2662,486 @@ setMethod("sort_array",
             jc <- callJStatic("org.apache.spark.sql.functions", "sort_array", x@jc, asc)
             column(jc)
           })
+
+
+
+
+
+
+
+
+
+
+
+#' This method computes basic statistics on a bigr.vector or a bigr.frame 
+#' object. It has several overloaded variants. In its simplest form, the 
+#' method accepts a single parameter of class bigr.vector or bigr.frame, and 
+#' produces several key statistics such as max, min and count. The method can
+#' also be called with a formula that specifies the exact set of aggregate 
+#' statistics on one or more columns of a bigr.frame.
+#' 
+#' The variants of the method that accept one parameter compute a fixed set 
+#' of statistics.
+#' 
+#' The "formula" variant, however, allows for greater flexibility as it 
+#' supports the ability to compute grouped aggregate functions for the 
+#' specified columns. For a given formula LHS ~ RHS, LHS should contain the 
+#' aggregate functions that need to be computed whereas RHS should specify 
+#' any grouping columns. If the aggregate functions are to be computed for 
+#' the entire dataset (i.e., without grouping), RHS should be set to a dot 
+#' (.) symbol. A column alone can be specified in the LHS, and that serves as
+#' a shorthand for a collection of aggregate functions that apply to the 
+#' column's type.
+#' 
+#' Supported aggregate functions are: min, max, count, sum, avg, var and sd. 
+#' Each function requires a single-parameter that corresponds to a column 
+#' name in the bigr.frame. Column names cannot be the same as function names.
+#' NA values are implicitly ignored when computing the aggregate statistics 
+#' on columns.
+#' 
+#' The count aggregate has two flavors. count(column) only counts rows where 
+#' the column is not NA. In addition, count(.) can be used to count the total
+#' number of rows in a bigr.frame, or group. Note that count(column1) and 
+#' count(column2) may yield different values because of differences in NA 
+#' values across column1 and column2.
+#' 
+#' @title Compute descriptive statistics
+#' @name summary
+#' @section Usage:
+#'   
+#'   \code{summary(object)           # object is a bigr.vector or bigr.frame}
+#'   
+#'   \code{summary(object, formula)  # object is a bigr.frame}
+#'
+#' @rdname summary_formula
+#' @param object   (bigr.vector or bigr.frame) The data itself
+#' @param formula  (formula) Optionally describes a set of columns, aggregate
+#'   functions to be calculated on each column, as well any grouping columns.
+#'   A formula can only be specified when object is of class "bigr.frame"
+#'   
+#' @return a data.frame with the computed aggregate functions
+#' @examples \dontrun{
+#' 
+#' #' Summarize a bigr.frame
+#' summary(air[,c("DepDelay", "ArrDelay")])
+#' 
+#' #' Summarize a bigr.vector
+#' summary(air$Distance)
+#' 
+#' # Count total # of rows (flights) in the entire dataset
+#' summary(air, count(.) ~ .)
+#' 
+#' # Count # of flights where Distance != NA
+#' summary(air, count(Distance) ~ .)
+#' 
+#' # Compute basic descriptive statistics (count, min and max) on a
+#' # non-numeric column.
+#' summary(air, UniqueCarrier ~ .)
+#' 
+#' # Compute basic descriptive statistics (count, min, max, sum, mean) on a
+#' # numeric column.
+#' summary(air, air$Distance ~ .)
+#' 
+#' # Compute mean and standard deviation of distance flown by each airline
+#' summary(air, mean(Distance) + sd(Distance) ~ UniqueCarrier)
+#' 
+#' # Compute a mix of statistics on various columms, grouped
+#' # by multiple columns (UniqueCarrier and Year)
+#' summary(air, max(Distance) + mean(DepDelay) + ArrDelay 
+#'                   ~ UniqueCarrier + Year)
+#' }
+NULL
+bigr.summary <- function(dataset, formula, as.bigr.frame=F) {
+ 
+   ###############################################################################
+  # Step 1: Parse left hand side of the formula and build the corresponding JaQL
+  # expression for the aggregate functions.
+  ###############################################################################
+  
+  # The JaQL expression containing the aggregated functions. In other words, whatever
+  # will be in the "into" clause. Ex: max($[1]), min($[3})
+  aggJaqlExp <- ""
+  
+  # An array containing the column names of the aggregated functions.
+  # Ex: max(saleprice), min(askingprice), avg(floors)
+  aggColnames <- vector()
+  
+  # An array containing the column types of the aggregated functions.
+  aggColtypes <- vector()
+  
+  # An array containing the aggregated functions to be applied
+  aggFunctions <- vector
+  
+  # In R, formulas are represented in a tree-like fashion and individual tokens can be
+  # extracted using the [[ ]] operators. For example, if formula == max(floors) ~ zipcode,
+  # formula[[1]] refers to ~, formula[[2]] is max(floors), and formula[[3]] is zipcode.
+  # In turn, formula[[2]][[1]] is max, while formula[[2]][[2]] is floors.
+  
+  # Therefore, to get the atomic tokens (i.e., aggregate functions and column names), a
+  # tree traversal algorithm is invoked for formula[[2]]. Since this algorithm is recursive,
+  # a global list of leaves is maintained in bigr.env. Such list must be manually cleaned up
+  # before each invocation of the tree traversal algorithm.
+  LEAVES <- list()
+  leaves <- .bigr.tree.traversal(formula[[2]])
+  
+  # The data type count
+  k <- 1
+  
+  # Go over the result of the traversal to interpret tokens.
+  i <- 1
+  while (i <= length(leaves)) {            
+    # The column name which an aggregate function will be applied to
+    col <- NULL
+    
+    # The bigr.frame name (only if using $ notation for the columns)
+    bfName <- NULL
+    
+    # The aggregate function name: either max, min, avg, etc.
+    fun <- NULL
+    
+    if (.bigr.isNullOrEmpty(leaves[[i]])) {
+      bigr.err(logSource, "Invalid token in the formula: '" %++% leaves[[i]] %++% "'")
+    }
+    
+    # Check if the current leaf is an aggregated function name
+    # TODO: Create a list of aggregate functions
+    if (leaves[[i]] %in% ALL_AGGREGATE_FUNCTIONS) {
+      if (i >= length(leaves)) {
+        bigr.err(logSource, "Invalid formula. A column name must be specified for each aggregate function")
+      }
+      
+      # Extract the function name
+      fun <- leaves[[i]]
+      
+      # Once an aggregate function is found, the next symbol(s)
+      # will correspond to the column name, which can be one symbol 
+      # (e.g., UniqueCarrier), or three symbols (e.g., air$UniqueCarrier)
+      if (.bigr.isNullOrEmpty(leaves[[i + 1]])) {
+        bigr.err(logSource, "Invalid token in the formula: '" %++% leaves[[i + 1]] %++% "'")
+      }
+      if (leaves[[i + 1]] == "$") {
+        bfName <- leaves[[i + 2]]   
+        col <- leaves[[i + 3]]
+        i <- i + 4
+      } else if (leaves[[i + 1]] == ".") {
+        col <- ALL_COLUMNS
+        i <- i + 2
+      } else {                    
+        col <- leaves[[i + 1]]
+        i <- i + 2
+      }
+      
+      # If no aggregate function is specified, then a column name was found.
+    } else if (.bigr.validSummaryColname(leaves[[i]])) {
+      col <- leaves[[i]]
+      i <- i + 1            
+      
+      # If a dollar symbol was found, the next token should be the dataset name and
+      # the next one should be the column name
+    } else if (leaves[[i]] == "$") {
+      if (i >= length(leaves) - 1) {
+        bigr.err(logSource, "Invalid formula. A column name must be specified after the $ operator")
+      }
+      col <- leaves[[i + 2]]
+      if (is.null(bfName)) {
+        bfName <- leaves[[i + 1]]
+      } else if (bfName != leaves[[i + 1]]) {
+        bigr.err(logSource, "All columns specified in the formula must belong to the same bigr.frame.")
+      } else {
+        bfName <- leaves[[i + 1]]
+      }
+      i <- i + 3
+      # + signs will be skipped
+    } else if (leaves[[i]] == "+") {
+      i <- i + 1
+    } else {
+      bigr.err(logSource, "Invalid symbol in the formula: '" %++% leaves[[i]] %++% "'")                
+    }
+    
+    # If current symbol/token is not +, some processing needs to be done
+    if (!is.null(col)) {            
+      
+      # If a bigr.frame was specified in the formula
+      if (!is.null(bfName)) {
+        
+        # Check that datasets are consistent
+        if (is.null(dataset)) {
+          dataset <- get(bfName)
+        } else if (.bigr.getJaqlExpression(dataset) != .bigr.getJaqlExpression(get(bfName))) {
+          bigr.err(logSource, "All columns specified in the formula must belong to the same bigr.frame.")
+        }
+      } else if (is.null(dataset)) {
+        bigr.err(logSource, "A bigr.frame must be specified in either (1) the left side of the formula, or (2) the 'data' parameter.")
+      }
+      
+      # Get the column id from the given column name
+      colid <- NULL
+      
+      # Handle special cases for count
+      if (!.bigr.isNullOrEmpty(fun)) {
+        if (fun == "count") {
+          if (.bigr.isNullOrEmpty(col)) {
+            bigr.err(logSource, "Invalid formula. A column was expected for function count.")
+          }
+          if (col == ALL_COLUMNS) {                        
+            colid <- 0
+          } else {
+            fun <- "countnonNA"
+          }
+          # countnonNA will be disabled for the user but not for the backend
+        } else if (fun == "countnonNA") {
+          bigr.err(logSource, "Invalid function 'countnonNA'. Use count instead.")
+        } else {
+          if (col == ALL_COLUMNS) {
+            bigr.err(logSource, "Operator . is only supported by the count function.")
+          }
+        }
+      }
+      if (.bigr.isNullOrEmpty(colid)) {
+        colid <- match(col, names(dataset)) - 1
+      }
+      
+      if (.bigr.isNullOrEmpty(colid)) {
+        bigr.err(logSource, sprintf("Column '%s' does not belong to the given dataset.", col))
+      }
+      
+      # Get the data type of the current column
+      dataType <- coltypes(dataset)[colid + 1]                
+      
+      # Append a new column to the aggregate JaQL expression if a function was specified
+      if (!is.null(fun)) {
+        
+        invalidOp <- F
+        # Check that numeric functions are not being applied to nominal variables
+        if (dataType == "character") {
+          if (!(fun %in% ALL_NOMINAL_AGGREGATE_FUNCTIONS)) {
+            invalidOp <- T
+            bigr.warn(logSource, "Cannot apply function '" %++% fun %++% "' to a non-numeric column: " %++% col)
+          } else {
+            if (fun %in% NUMERIC_TYPE_AGGREGATE_FUNCTIONS) {
+              aggColtypes[k] <- "numeric"
+            } else {
+              aggColtypes[k] <- dataType
+            }                            
+          }
+        } else {
+          aggColtypes[k] <- "numeric"
+        }
+        if (!invalidOp) {
+          aggJaqlExp <- aggJaqlExp %++% fun %++% "($[*][" %++% colid %++% "])"
+        } else {
+          aggColtypes[k] <- "numeric"
+          aggJaqlExp <- aggJaqlExp %++% fun %++% "(null)"
+        }
+        # Display countnonNA as count for the user. Under the covers, we invoke countnonNA
+        if (fun == "countnonNA") {
+          aggColnames[k] <- "count(" %++% col %++% ")"
+        } else {
+          aggColnames[k] <- fun %++% "(" %++% col %++% ")"
+        }
+        aggFunctions[k] <- fun
+        k <- k + 1
+        
+        # Calculate all functions for the current column if no function was specified
+      } else {
+        
+        # Pick the set of aggregate functions according to the data type
+        functions <- NULL
+        if (dataType == "character" | dataType == "logical") {
+          functions <- DEFAULT_NOMINAL_AGGREGATE_FUNCTIONS
+        } else {
+          functions <- DEFAULT_NUMERIC_AGGREGATE_FUNCTIONS
+        }     
+        
+        aggJaqlExp <- aggJaqlExp %++% paste(functions, "($[*][" %++% colid %++% "])", sep="", collapse=", ")
+        aggColFuns <- functions
+        for (j in 1 : length(functions)) {
+          if (functions[j] %in% NUMERIC_TYPE_AGGREGATE_FUNCTIONS) { 
+            aggColtypes[j + k - 1] <- "numeric"                            
+          } else {
+            aggColtypes[j + k - 1] <- dataType
+          }
+          if (functions[j] == "countnonNA") {
+            aggColnames[j + k - 1] <- "count(" %++% col %++% ")"    
+          } else {
+            aggColnames[j + k - 1] <- functions[j] %++% "(" %++% col %++% ")"
+          }
+          
+        }
+        k <- k + length(functions)
+      }
+      
+      # Append a "," if this is not the last token
+      if (i <= length(leaves)) {
+        aggJaqlExp <- aggJaqlExp %++% ", "
+      }
+    }
+  }    
+  # bigr.info(logSource, "Aggregate JaQL expression: " %++% aggJaqlExp)
+  
+  ###############################################################################
+  # Step 2: Parse right hand size of the formula to extract the grouping columns        
+  ###############################################################################
+  
+  # The JaQL expression for the group by clause (e.g., "$[1], $[2]") 
+  groupByJaqlExp <- ""
+  
+  # The JaQL expression for the grouping columns (e.g., "$[0][1], $[0][2]")
+  # This is to include the grouping columns in the resulting data.frame
+  groupingColExp <- ""
+  
+  # The names of the grouping columns
+  groupingColnames <- vector()
+  
+  # The data types of the grouping columns
+  groupingColtypes <- vector()
+  
+  # The complete JaQL query to calculate the summary
+  summaryJaqlExp <- NULL
+  if (formula[[3]] == ALL_COLUMNS) {
+    summaryJaqlExp <- "XXX" %++% " -> " %++% "group into [" %++% aggJaqlExp %++% "]"            
+    # bigr.infoShow(logSource, aggColnames)            
+  } else {
+    # The counter for groupingColnames/types
+    k <- 1
+    
+    # Repeat the same process for formula[[2]] (see above comments)
+    LEAVES <- list()
+    leaves <- .bigr.tree.traversal(formula[[3]])
+    # bigr.infoShow(logSource, leaves)
+    i <- 1
+    while (i <= length(leaves)) {
+      # The column name which an aggregate function will be applied to
+      col <- NULL
+      
+      # The bigr.frame name (optional)
+      bfName <- NULL
+      
+      # If a column name is specified
+      if (.bigr.validSummaryColname(leaves[[i]])) {
+        col <- leaves[[i]]
+        i <- i + 1
+        
+        # If a dollar symbol was found, the next token should be the dataset name and
+        # the next one should be the column name                
+      } else if (leaves[[i]] == "$") {
+        if (i >= length(leaves) - 1) {
+          bigr.err(logSource, "Invalid formula. A column name must be specified after the $ operator")
+        }
+        col <- leaves[[i + 2]]
+        if (is.null(bfName)) {
+          bfName <- leaves[[i + 1]]
+        } else if (bfName != leaves[[i + 1]]) {
+          bigr.err(logSource, "All columns specified in the formula must belong to the same bigr.frame.")
+        } else {
+          bfName <- leaves[[i + 1]]
+        }
+        i <- i + 3
+      } else if (leaves[[i]] == "+") {
+        # Do nothing
+        i <- i + 1
+      } else {
+        stop("Invalid symbol in the formula: '" %++% leaves[[i]] %++% "'")
+      }
+      
+      # If current symbol is not +, there is something to do
+      if (!is.null(col)) {
+        # If a bigr.frame was specified in the formula
+        if (!is.null(bfName)) {
+          # Check that datasets are consistent
+          if (is.null(dataset)) {
+            dataset <- get(bfName)
+          } else if (.bigr.getJaqlExpression(dataset) != .bigr.getJaqlExpression(get(bfName))) {
+            stop("All columns specified in the formula must belong to the same bigr.frame.")
+          }
+        } else if (is.null(dataset)) {
+          stop("A bigr.frame must be specified in the formula.")
+        }
+        
+        # Get the column id from the given column name
+        colid <- match(col, colnames(dataset)) - 1
+        if (.bigr.isNullOrEmpty(colid)) {
+          stop("2. Invalid column: '" %++% col %++% "'" )
+        }
+        
+        # Append current column to the groupBy clauses
+        groupByJaqlExp <- groupByJaqlExp %++% "$[" %++% colid %++% "]"
+        #groupingColExp <- groupingColExp %++% "$[0][" %++% colid %++% "]"
+        groupingColnames[k] <- col
+        groupingColtypes[k] <- coltypes(dataset)[colid + 1]
+        k <- k + 1
+        if (i <= length(leaves)) {
+          groupByJaqlExp <- groupByJaqlExp %++% ", "
+          #   groupingColExp <- groupingColExp %++% ", "
+        } 
+      }
+    }
+    groupingColExp <- paste("grpcol[" %++% (0:(length(groupingColnames)-1)) %++% "]", collapse=", ")
+    
+    # bigr.info(logSource, "GroupByJaqlExp: " %++% groupByJaqlExp)
+    # bigr.info(logSource, "groupingColnames:")
+    # bigr.infoShow(logSource, groupingColnames)
+    # bigr.info(logSource, "groupingColtypes:")
+    # bigr.infoShow(logSource, groupingColtypes)
+    # bigr.info(logSource, "aggColnames:")
+    # bigr.infoShow(logSource, aggColnames)
+    # bigr.info(logSource, "aggColtypes:")
+    # bigr.infoShow(logSource, aggColtypes)
+    
+    summaryJaqlExp <- "XXX" %++% " -> " %++% "group by grpcol = [" %++% groupByJaqlExp %++%
+      "] into [" %++% groupingColExp %++% ", " %++% aggJaqlExp %++% "]"
+  }
+  class <- NULL
+  classType <- NULL
+  if (length(groupingColnames > 0)) {        
+    class <- "class"
+    classType <- "character"
+  }
+  
+  return(summaryJaqlExp)
+}
+
+# This function returns the leaves of a formula tree in a preorder fashion
+.bigr.tree.traversal <- function(root) {    
+  if (!is.null(root)) {
+    # If the current node has children
+    if (length(root) > 1) {        
+      for (i in 1:length(root)) {                
+        .bigr.tree.traversal(root[[i]])
+      }
+      # Only add the current node to the list if it has no children    
+    } else {
+      LEAVES[[length(LEAVES) + 1]] <- as.character(root)
+    }
+  }
+  LEAVES
+}
+
+LEAVES <- list()
+ALL_AGGREGATE_FUNCTIONS <- c("max", "min", "avg", "sum")
+ALL_NOMINAL_AGGREGATE_FUNCTIONS <- c("min", "max")
+ALL_COLUMNS <- "ALL_COLUMNS"
+NUMERIC_TYPE_AGGREGATE_FUNCTIONS <- c("avg", "sum")
+DEFAULT_NOMINAL_AGGREGATE_FUNCTIONS <- c("min", "max")
+DEFAULT_NUMERIC_AGGREGATE_FUNCTIONS <- c("min", "max", "avg", "sum")
+
+
+.bigr.isNullOrEmpty <- function(x) {
+  if (is.null(x)) {
+    return(TRUE)  
+  } else if (length(x) < 1) {
+    return(TRUE)
+  }
+  if (class(x) == "character" | class(x) == "numeric" | class(x) == "logical" | class(x) == "integer") {
+    if (all(is.na(x) | is.null(x) | x == "") ) {
+      return(TRUE)
+    }
+  }
+  return(FALSE)
+}
+
+.bigr.validSummaryColname <- function(x) { TRUE }
+
+"%++%" <- function(x, y) {
+  paste(x, y, sep = "")
+}
