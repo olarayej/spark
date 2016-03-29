@@ -100,7 +100,7 @@ test_that("structType and structField", {
 test_that("create DataFrame from RDD", {
   rdd <- lapply(parallelize(sc, 1:10), function(x) { list(x, as.character(x)) })
   df <- createDataFrame(sqlContext, rdd, list("a", "b"))
-  dfAsDF <- as.DataFrame(sqlContext, rdd, list("a", "b"))
+  dfAsDF <- as.DataFrame(rdd, list("a", "b"))
   expect_is(df, "DataFrame")
   expect_is(dfAsDF, "DataFrame")
   expect_equal(count(df), 10)
@@ -117,7 +117,7 @@ test_that("create DataFrame from RDD", {
   expect_equal(dtypes(dfAsDF), list(c("a", "int"), c("b", "string")))
 
   df <- createDataFrame(sqlContext, rdd)
-  dfAsDF <- as.DataFrame(sqlContext, rdd)
+  dfAsDF <- as.DataFrame(rdd)
   expect_is(df, "DataFrame")
   expect_is(dfAsDF, "DataFrame")
   expect_equal(columns(df), c("_1", "_2"))
@@ -141,7 +141,7 @@ test_that("create DataFrame from RDD", {
                        structField("height", "float"))
   df <- read.df(sqlContext, jsonPathNa, "json", schema)
   df2 <- createDataFrame(sqlContext, toRDD(df), schema)
-  df2AsDF <- as.DataFrame(sqlContext, toRDD(df), schema)
+  df2AsDF <- as.DataFrame(toRDD(df), schema)
   expect_equal(columns(df2), c("name", "age", "height"))
   expect_equal(columns(df2AsDF), c("name", "age", "height"))
   expect_equal(dtypes(df2), list(c("name", "string"), c("age", "int"), c("height", "float")))

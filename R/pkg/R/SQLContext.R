@@ -74,7 +74,7 @@ infer_type <- function(x) {
 #'
 #' Converts R data.frame or list into DataFrame.
 #'
-#' @param sqlContext A SQLContext
+#' @param sqlContext (optional) A SQLContext
 #' @param data An RDD or list or data.frame
 #' @param schema a list of column names or named list (StructType), optional
 #' @return an DataFrame
@@ -84,8 +84,8 @@ infer_type <- function(x) {
 #'\dontrun{
 #' sc <- sparkR.init()
 #' sqlContext <- sparkRSQL.init(sc)
-#' df1 <- as.DataFrame(sqlContext, iris)
-#' df2 <- as.DataFrame(sqlContext, list(3,4,5,6))
+#' df1 <- as.DataFrame(iris)
+#' df2 <- as.DataFrame(list(3,4,5,6))
 #' df3 <- createDataFrame(sqlContext, iris)
 #' }
 
@@ -164,11 +164,8 @@ createDataFrame <- function(sqlContext, data, schema = NULL, samplingRatio = 1.0
   dataFrame(sdf)
 }
 
-#' @rdname createDataFrame
-#' @aliases createDataFrame
-#' @export
-as.DataFrame <- function(sqlContext, data, schema = NULL, samplingRatio = 1.0) {
-  createDataFrame(sqlContext, data, schema, samplingRatio)
+as.DataFrame <- function(data, schema = NULL, samplingRatio = 1.0) {
+  createDataFrame(sparkRSQL.init(), data, schema, samplingRatio)
 }
 
 #' toDF
