@@ -19,14 +19,12 @@ package org.apache.spark.scheduler.cluster.mesos
 
 import java.io.File
 import java.util.{Collections, List => JList}
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.collection.mutable.{Buffer, HashMap, HashSet}
 
-import com.google.common.base.Stopwatch
 import org.apache.mesos.{Scheduler => MScheduler, SchedulerDriver}
 import org.apache.mesos.Protos.{TaskInfo => MesosTaskInfo, _}
 
@@ -111,9 +109,13 @@ private[spark] class CoarseMesosSchedulerBackend(
   private val slaveOfferConstraints =
     parseConstraintString(sc.conf.get("spark.mesos.constraints", ""))
 
-  // reject offers with mismatched constraints in seconds
+  // Reject offers with mismatched constraints in seconds
   private val rejectOfferDurationForUnmetConstraints =
     getRejectOfferDurationForUnmetConstraints(sc)
+
+  // Reject offers when we reached the maximum number of cores for this framework
+  private val rejectOfferDurationForReachedMaxCores =
+    getRejectOfferDurationForReachedMaxCores(sc)
 
   // A client for talking to the external shuffle service
   private val mesosExternalShuffleClient: Option[MesosExternalShuffleClient] = {
@@ -151,7 +153,8 @@ private[spark] class CoarseMesosSchedulerBackend(
       sc.sparkUser,
       sc.appName,
       sc.conf,
-      sc.ui.map(_.appUIAddress))
+      sc.conf.getOption("spark.mesos.driver.webui.url").orElse(sc.ui.map(_.appUIAddress))
+    )
     startScheduler(driver)
   }
 
@@ -280,28 +283,42 @@ private[spark] class CoarseMesosSchedulerBackend(
   }
 
   private def declineUnmatchedOffers(d: SchedulerDriver, offers: Buffer[Offer]): Unit = {
-    for (offer <- offers) {
-      val id = offer.getId.getValue
-      val offerAttributes = toAttributeMap(offer.getAttributesList)
-      val mem = getResource(offer.getResourcesList, "mem")
-      val cpus = getResource(offer.getResourcesList, "cpus")
-      val filters = Filters.newBuilder()
-        .setRefuseSeconds(rejectOfferDurationForUnmetConstraints).build()
+    offers.foreach { offer =>
+      declineOffer(d, offer, Some("unmet constraints"),
+        Some(rejectOfferDurationForUnmetConstraints))
+    }
+  }
 
-      logDebug(s"Declining offer: $id with attributes: $offerAttributes mem: $mem cpu: $cpus"
-        + s" for $rejectOfferDurationForUnmetConstraints seconds")
+  private def declineOffer(
+      d: SchedulerDriver,
+      offer: Offer,
+      reason: Option[String] = None,
+      refuseSeconds: Option[Long] = None): Unit = {
 
-      d.declineOffer(offer.getId, filters)
+    val id = offer.getId.getValue
+    val offerAttributes = toAttributeMap(offer.getAttributesList)
+    val mem = getResource(offer.getResourcesList, "mem")
+    val cpus = getResource(offer.getResourcesList, "cpus")
+
+    logDebug(s"Declining offer: $id with attributes: $offerAttributes mem: $mem" +
+      s" cpu: $cpus for $refuseSeconds seconds" +
+      reason.map(r => s" (reason: $r)").getOrElse(""))
+
+    refuseSeconds match {
+      case Some(seconds) =>
+        val filters = Filters.newBuilder().setRefuseSeconds(seconds).build()
+        d.declineOffer(offer.getId, filters)
+      case _ => d.declineOffer(offer.getId)
     }
   }
 
   /**
-    * Launches executors on accepted offers, and declines unused offers. Executors are launched
-    * round-robin on offers.
-    *
-    * @param d SchedulerDriver
-    * @param offers Mesos offers that match attribute constraints
-    */
+   * Launches executors on accepted offers, and declines unused offers. Executors are launched
+   * round-robin on offers.
+   *
+   * @param d SchedulerDriver
+   * @param offers Mesos offers that match attribute constraints
+   */
   private def handleMatchedOffers(d: SchedulerDriver, offers: Buffer[Offer]): Unit = {
     val tasks = buildMesosTasks(offers)
     for (offer <- offers) {
@@ -327,22 +344,23 @@ private[spark] class CoarseMesosSchedulerBackend(
         d.launchTasks(
           Collections.singleton(offer.getId),
           offerTasks.asJava)
-      } else { // decline
-        logDebug(s"Declining offer: $id with attributes: $offerAttributes " +
-          s"mem: $offerMem cpu: $offerCpus")
-
-        d.declineOffer(offer.getId)
+      } else if (totalCoresAcquired >= maxCores) {
+        // Reject an offer for a configurable amount of time to avoid starving other frameworks
+        declineOffer(d, offer, Some("reached spark.cores.max"),
+          Some(rejectOfferDurationForReachedMaxCores))
+      } else {
+        declineOffer(d, offer)
       }
     }
   }
 
   /**
-    * Returns a map from OfferIDs to the tasks to launch on those offers.  In order to maximize
-    * per-task memory and IO, tasks are round-robin assigned to offers.
-    *
-    * @param offers Mesos offers that match attribute constraints
-    * @return A map from OfferID to a list of Mesos tasks to launch on that offer
-    */
+   * Returns a map from OfferIDs to the tasks to launch on those offers.  In order to maximize
+   * per-task memory and IO, tasks are round-robin assigned to offers.
+   *
+   * @param offers Mesos offers that match attribute constraints
+   * @return A map from OfferID to a list of Mesos tasks to launch on that offer
+   */
   private def buildMesosTasks(offers: Buffer[Offer]): Map[OfferID, List[MesosTaskInfo]] = {
     // offerID -> tasks
     val tasks = new HashMap[OfferID, List[MesosTaskInfo]].withDefaultValue(Nil)
@@ -449,7 +467,12 @@ private[spark] class CoarseMesosSchedulerBackend(
             s"host ${slave.hostname}, port $externalShufflePort for app ${conf.getAppId}")
 
         mesosExternalShuffleClient.get
-          .registerDriverWithShuffleService(slave.hostname, externalShufflePort)
+          .registerDriverWithShuffleService(
+            slave.hostname,
+            externalShufflePort,
+            sc.conf.getTimeAsMs("spark.storage.blockManagerSlaveTimeoutMs",
+              s"${sc.conf.getTimeAsMs("spark.network.timeout", "120s")}ms"),
+            sc.conf.getTimeAsMs("spark.executor.heartbeatInterval", "10s"))
         slave.shuffleRegistered = true
       }
 
@@ -493,12 +516,11 @@ private[spark] class CoarseMesosSchedulerBackend(
 
     // Wait for executors to report done, or else mesosDriver.stop() will forcefully kill them.
     // See SPARK-12330
-    val stopwatch = new Stopwatch()
-    stopwatch.start()
+    val startTime = System.nanoTime()
 
     // slaveIdsWithExecutors has no memory barrier, so this is eventually consistent
     while (numExecutors() > 0 &&
-      stopwatch.elapsed(TimeUnit.MILLISECONDS) < shutdownTimeoutMS) {
+      System.nanoTime() - startTime < shutdownTimeoutMS * 1000L * 1000L) {
       Thread.sleep(100)
     }
 
@@ -507,6 +529,9 @@ private[spark] class CoarseMesosSchedulerBackend(
         + s"to terminate within $shutdownTimeoutMS ms. This may leave temporary files "
         + "on the mesos nodes.")
     }
+
+    // Close the mesos external shuffle client if used
+    mesosExternalShuffleClient.foreach(_.close())
 
     if (mesosDriver != null) {
       mesosDriver.stop()
