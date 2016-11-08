@@ -19,7 +19,7 @@ package org.apache.spark.ui
 
 import java.net.URLDecoder
 import java.text.SimpleDateFormat
-import java.util.{Date, Locale}
+import java.util.{Date, Locale, TimeZone}
 
 import scala.util.control.NonFatal
 import scala.xml._
@@ -36,7 +36,8 @@ private[spark] object UIUtils extends Logging {
 
   // SimpleDateFormat is not thread-safe. Don't expose it to avoid improper use.
   private val dateFormat = new ThreadLocal[SimpleDateFormat]() {
-    override def initialValue(): SimpleDateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
+    override def initialValue(): SimpleDateFormat =
+      new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.US)
   }
 
   def formatDate(date: Date): String = dateFormat.get.format(date)
@@ -169,6 +170,7 @@ private[spark] object UIUtils extends Logging {
     <script src={prependBaseUri("/static/additional-metrics.js")}></script>
     <script src={prependBaseUri("/static/timeline-view.js")}></script>
     <script src={prependBaseUri("/static/log-view.js")}></script>
+    <script src={prependBaseUri("/static/webui.js")}></script>
   }
 
   def vizHeaderNodes: Seq[Node] = {
@@ -200,7 +202,8 @@ private[spark] object UIUtils extends Logging {
       activeTab: SparkUITab,
       refreshInterval: Option[Int] = None,
       helpText: Option[String] = None,
-      showVisualization: Boolean = false): Seq[Node] = {
+      showVisualization: Boolean = false,
+      useDataTables: Boolean = false): Seq[Node] = {
 
     val appName = activeTab.appName
     val shortAppName = if (appName.length < 36) appName else appName.take(32) + "..."
@@ -215,6 +218,7 @@ private[spark] object UIUtils extends Logging {
       <head>
         {commonHeaderNodes}
         {if (showVisualization) vizHeaderNodes else Seq.empty}
+        {if (useDataTables) dataTablesHeaderNodes else Seq.empty}
         <title>{appName} - {title}</title>
       </head>
       <body>
@@ -337,6 +341,7 @@ private[spark] object UIUtils extends Logging {
       completed: Int,
       failed: Int,
       skipped: Int,
+      killed: Int,
       total: Int): Seq[Node] = {
     val completeWidth = "width: %s%%".format((completed.toDouble/total)*100)
     // started + completed can be > total when there are speculative tasks
@@ -348,6 +353,7 @@ private[spark] object UIUtils extends Logging {
         {completed}/{total}
         { if (failed > 0) s"($failed failed)" }
         { if (skipped > 0) s"($skipped skipped)" }
+        { if (killed > 0) s"($killed killed)" }
       </span>
       <div class="bar bar-completed" style={completeWidth}></div>
       <div class="bar bar-running" style={startWidth}></div>
@@ -501,5 +507,20 @@ private[spark] object UIUtils extends Logging {
       decodedParam = URLDecoder.decode(param, "UTF-8")
     }
     param
+  }
+
+  def getTimeZoneOffset() : Int =
+    TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000 / 60
+
+  /**
+  * Return the correct Href after checking if master is running in the
+  * reverse proxy mode or not.
+  */
+  def makeHref(proxy: Boolean, id: String, origHref: String): String = {
+    if (proxy) {
+      s"/proxy/$id"
+    } else {
+      origHref
+    }
   }
 }
